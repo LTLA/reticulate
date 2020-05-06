@@ -7,18 +7,26 @@
 #' @param path The path in which Miniconda will be installed. Note that the
 #'   installer does not support paths containing spaces. See [miniconda_path]
 #'   for more details on the default path used by `reticulate`.
+#'
+#' @param version The version of the Miniconda installer to use, defaults to
+#'   the latest.
 #' 
 #' @param update Boolean; update to the latest version of Miniconda after install?
 #' 
 #' @param force Boolean; force re-installation if Miniconda is already installed
 #'   at the requested path?
+#'
+#' @param create_env Boolean; create a `r-reticulate` environment inside the 
+#'   newly created Miniconda installation?
 #' 
 #' @family miniconda
 #' 
 #' @export
 install_miniconda <- function(path = miniconda_path(),
+                              version = "latest",
                               update = TRUE,
-                              force = FALSE)
+                              force = FALSE,
+                              create_env = TRUE)
 {
   if (grepl(" ", path, fixed = TRUE))
     stop("cannot install Miniconda into a path containing spaces")
@@ -28,7 +36,7 @@ install_miniconda <- function(path = miniconda_path(),
   install_miniconda_preflight(path, force)
   
   # download the installer
-  url <- miniconda_installer_url()
+  url <- miniconda_installer_url(conda_version = version)
   installer <- file.path(tempdir(), basename(url))
   messagef("* Downloading %s ...", shQuote(url))
   status <- download.file(url, destfile = installer, mode = "wb")
@@ -51,9 +59,11 @@ install_miniconda <- function(path = miniconda_path(),
     miniconda_update(path)
   
   # create r-reticulate environment
-  conda <- miniconda_conda(path)
-  python <- miniconda_python_package()
-  conda_create("r-reticulate", packages = c(python, "numpy"), conda = conda)
+  if (create_env) {
+      conda <- miniconda_conda(path)
+      python <- miniconda_python_package()
+      conda_create("r-reticulate", packages = c(python, "numpy"), conda = conda)
+  }
   
   messagef("* Miniconda has been successfully installed at %s.", shQuote(path))
   path
@@ -94,15 +104,16 @@ install_miniconda_preflight <- function(path, force) {
   
 }
 
-miniconda_installer_url <- function(version = "3") {
+miniconda_installer_url <- function(python_version = "3", 
+                                    conda_version = "latest") {
   
   base <- "https://repo.anaconda.com/miniconda"
   arch <- ifelse(.Machine$sizeof.pointer == 8, "x86_64", "x86")
   version <- as.character(version)
   name <- if (is_windows())
-    sprintf("Miniconda%s-latest-Windows-%s.exe", version, arch)
+    sprintf("Miniconda%s-%s-Windows-%s.exe", python_version, conda_version, arch)
   else if (is_osx())
-    sprintf("Miniconda%s-latest-MacOSX-%s.sh", version, arch)
+    sprintf("Miniconda%s-%s-MacOSX-%s.sh", python_version, conda_version, arch)
   else if (is_linux())
     sprintf("Miniconda%s-latest-Linux-%s.sh", version, arch)
   else

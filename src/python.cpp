@@ -6,6 +6,7 @@ using namespace Rcpp;
 
 #include "signals.h"
 #include "reticulate_types.h"
+#include "altrep.h"
 
 #include "event_loop.h"
 #include "tinythread.h"
@@ -914,6 +915,21 @@ SEXP py_to_r(PyObject* x, bool convert) {
 
     // determine the target type of the array
     int typenum = narrow_array_typenum(array);
+
+    // Placeholder code to check that altreps work as expected.
+    if (dimsVector.size() == 1) {
+        if (typenum == NPY_DOUBLE) {
+            if (PyArray_TYPE(array) != NPY_HALF) {
+                return create_altrep_numpy_double_array(array);
+            }
+        } else if (typenum == NPY_LONG) {
+            return create_altrep_numpy_integer_array(array);
+        } else if (typenum == NPY_BOOL) {
+            return create_altrep_numpy_logical_array(array);
+        } else if (typenum == NPY_CDOUBLE) {
+            return create_altrep_numpy_complex_array(array);
+        }
+    }
 
     // cast it to a fortran array (PyArray_CastToType steals the descr)
     // (note that we will decref the copied array below)

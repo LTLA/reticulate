@@ -716,15 +716,9 @@ static const R_CallMethodDef CallEntries[] = {
     {NULL, NULL, 0}
 };
 
-void init_altrep_numpy_double_array(DllInfo* dll);
-void init_altrep_numpy_integer_array(DllInfo* dll);
-void init_altrep_numpy_logical_array(DllInfo* dll);
-void init_altrep_numpy_complex_array(DllInfo* dll);
+void init_altvec_from_numpy_array(DllInfo* dll);
 RcppExport void R_init_reticulate(DllInfo *dll) {
     R_registerRoutines(dll, NULL, CallEntries, NULL, NULL);
     R_useDynamicSymbols(dll, FALSE);
-    init_altrep_numpy_double_array(dll);
-    init_altrep_numpy_integer_array(dll);
-    init_altrep_numpy_logical_array(dll);
-    init_altrep_numpy_complex_array(dll);
+    init_altvec_from_numpy_array(dll);
 }

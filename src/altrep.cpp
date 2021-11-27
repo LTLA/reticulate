@@ -6,16 +6,16 @@
 #include "R_ext/Rdynload.h"
 #include "R_ext/Altrep.h"
 
-R_altrep_class_t numpy_double_altrep_t;
-R_altrep_class_t numpy_integer_altrep_t;
-R_altrep_class_t numpy_logical_altrep_t;
-R_altrep_class_t numpy_complex_altrep_t;
+R_altrep_class_t altreal_from_numpy_array_t;
+R_altrep_class_t altinteger_from_numpy_array_t;
+R_altrep_class_t altlogical_from_numpy_array_t;
+R_altrep_class_t altcomplex_from_numpy_array_t;
 
 /********************************
  ****** Converter classes *******
  ********************************/
 
-struct NumpyDoubleConverter {
+struct ConverterToReal {
 private:
     template<typename From>
     static Rcpp::NumericVector copy_array_to_rvector(PyArrayObject* array) {
@@ -42,7 +42,7 @@ private:
 
 public:    
     static R_altrep_class_t* altrep_class() {
-        return &numpy_double_altrep_t;
+        return &altreal_from_numpy_array_t;
     }
 
     static SEXP materialize(PyArrayObject* array) {
@@ -131,7 +131,7 @@ public:
     }
 };
 
-struct NumpyIntegerConverter {
+struct ConverterToInteger {
 private:
     template<typename From>
     static Rcpp::IntegerVector copy_array_to_rvector(PyArrayObject* array) {
@@ -158,7 +158,7 @@ private:
 
 public:    
     static R_altrep_class_t* altrep_class() {
-        return &numpy_integer_altrep_t;
+        return &altinteger_from_numpy_array_t;
     }
 
     static SEXP materialize(PyArrayObject* array) {
@@ -230,10 +230,10 @@ public:
     }
 };
 
-struct NumpyLogicalConverter {
+struct ConverterToLogical {
 public:    
     static R_altrep_class_t* altrep_class() {
-        return &numpy_logical_altrep_t;
+        return &altlogical_from_numpy_array_t;
     }
 
     static SEXP materialize(PyArrayObject* array) {
@@ -274,7 +274,7 @@ public:
 
 typedef struct { float real, imag; } npy_complex64;
 
-struct NumpyComplexConverter {
+struct ConverterToComplex {
 private:
     template<typename From>
     static Rcpp::ComplexVector copy_array_to_rvector(PyArrayObject* array) {
@@ -320,7 +320,7 @@ private:
 
 public:
     static R_altrep_class_t* altrep_class() {
-        return &numpy_complex_altrep_t;
+        return &altcomplex_from_numpy_array_t;
     }
 
     static SEXP materialize(PyArrayObject* array) {
@@ -378,29 +378,42 @@ public:
     }
 };
 
-
 /********************************
  ******* Altrep handlers ********
  ********************************/
 
-// Need to tell XPtr to not attempt to free the Python-owned memory.
-void mock_finalizer(reticulate::libpython::tagPyArrayObject*) {} 
-
-typedef Rcpp::XPtr<PyArrayObject, Rcpp::PreserveStorage, mock_finalizer> PyArrayObjectXPtr;
-
-// Wrapper to handle the altrep-related stuff.
 template<class Converter>
-struct altrep_numpy_array {
-    static SEXP create(PyArrayObject* ptr) {
-        return R_new_altrep(*Converter::altrep_class(), PyArrayObjectXPtr(ptr, false), R_NilValue);
+struct AltvecFromNumpyArray {
+    // Need to tell XPtr to decref rather than attempt to free the Python-owned memory.
+    static void PyObjectXPtr_finalizer(PyObject* x) {
+        Py_DecRef(x);
+        return;    
+    } 
+
+    typedef Rcpp::XPtr<PyObject, Rcpp::PreserveStorage, PyObjectXPtr_finalizer> PyObjectXPtr;
+
+    static SEXP create(PyObject* x) {
+        // protect from Python's GC until PyObjectXPtr's finalizer runs.
+        Py_IncRef(x);
+        return R_new_altrep(*Converter::altrep_class(), PyObjectXPtr(x, true), R_NilValue);
+    }
+
+    static PyArrayObject* as_array_obj(SEXP vec) {
+        PyObjectXPtr data1(R_altrep_data1(vec));
+        return reinterpret_cast<PyArrayObject*>(data1.get());                
     }
 
     static SEXP materialize(SEXP vec) {
-        SEXP data2=R_altrep_data2(vec);
-        if (data2==R_NilValue) {
-            PyArrayObjectXPtr data1(R_altrep_data1(vec));
-            data2 = Converter::materialize(data1.get());
+        SEXP data2 = R_altrep_data2(vec);
+        if (data2 == R_NilValue) {
+            data2 = Converter::materialize(as_array_obj(vec));
             R_set_altrep_data2(vec, data2);
+
+            // Technically, I guess we could decref it now and replace it with
+            // a null pointer so that the finalizer is a no-op. This enables
+            // the Python GC to collect memory ASAP to reduce overall memory
+            // usage, but all methods MUST check for data2 non-NULL'ness before
+            // attempting to access data1's array data.
         }
         return data2;
     }
@@ -408,19 +421,18 @@ struct altrep_numpy_array {
     // ALTREP methods -------------------
 
     static R_xlen_t length(SEXP vec) {
-        SEXP data2=R_altrep_data2(vec);
-        if (data2==R_NilValue) {
-            PyArrayObjectXPtr data1(R_altrep_data1(vec));
-            return PyArray_SIZE(data1.get());
+        SEXP data2 = R_altrep_data2(vec);
+        if (data2 == R_NilValue) {
+            return PyArray_SIZE(as_array_obj(vec));
         } else {
             return LENGTH(data2);
         }
     }
 
-    static Rboolean inspect(SEXP x, int pre, int deep, int pvec, void (*inspect_subtree)(SEXP, int, int, int)){
-        R_xlen_t len=length(x);
-        SEXP data2=R_altrep_data2(x);
-        const char* mode=(data2==R_NilValue ? "lazy" : "materialized");
+    static Rboolean inspect(SEXP vec, int pre, int deep, int pvec, void (*inspect_subtree)(SEXP, int, int, int)){
+        R_xlen_t len = length(vec);
+        SEXP data2 = R_altrep_data2(vec);
+        const char* mode = (data2 == R_NilValue ? "lazy" : "materialized");
         Rprintf("%s %s numpy vector (len=%d)\n", mode, Converter::type_as_string(), len);
         return TRUE;
     }
@@ -440,16 +452,18 @@ struct altrep_numpy_array {
         if (writeable) {
             return STDVEC_DATAPTR(materialize(vec));
         } 
-        
-        PyArrayObjectXPtr data1(R_altrep_data1(vec));
-        if (Converter::useable_pointer(data1.get())) {
-            return (double*)PyArray_DATA(data1.get());
+
+        PyArrayObject* ptr = as_array_obj(vec);
+        if (Converter::useable_pointer(ptr)) {
+            return PyArray_DATA(ptr);
         } else {
             return STDVEC_DATAPTR(materialize(vec));
         }
     }
 
-    static void partial_init() {
+    // Initializer for the entire class.
+  
+    static void init() {
         R_altrep_class_t* class_t = Converter::altrep_class();
         R_set_altrep_Length_method(*class_t, length);
         R_set_altrep_Inspect_method(*class_t, inspect);
@@ -458,84 +472,74 @@ struct altrep_numpy_array {
     } 
 };
 
+// ALTREAL/INTEGER/etc. methods -----------------
+
 template<class Converter>
-struct altrep_numpy_numeric_array : public altrep_numpy_array<Converter> {
-    // ALTREAL/INTEGER methods -----------------
-
-    static typename Converter::value_type value_elt(SEXP vec, R_xlen_t i){
-        SEXP data2=R_altrep_data2(vec);
-        if (data2==R_NilValue) {
-            Rcpp::XPtr<PyArrayObject> data1(R_altrep_data1(vec));
-            return Converter::extract(data1.get(), i);
-        } else {
-            return static_cast<const typename Converter::value_type*>(STDVEC_DATAPTR(data2))[i];
-        }
+static typename Converter::value_type elt_from_numpy_array(SEXP vec, R_xlen_t i) {
+    SEXP data2 = R_altrep_data2(vec);
+    if (data2 == R_NilValue) {
+        Rcpp::XPtr<PyArrayObject> data1(R_altrep_data1(vec));
+        return Converter::extract(data1.get(), i);
+    } else {
+        return static_cast<const typename Converter::value_type*>(STDVEC_DATAPTR(data2))[i];
     }
+}
 
-    static R_xlen_t get_region(SEXP vec, R_xlen_t start, R_xlen_t size, typename Converter::value_type* out){
-        SEXP data2=R_altrep_data2(vec);
-        if (data2==R_NilValue) {
-            PyArrayObjectXPtr data1(R_altrep_data1(vec));
-            return Converter::extract(data1.get(), start, size, out);
-        } else {
-            const typename Converter::value_type* ptr = static_cast<const typename Converter::value_type*>(STDVEC_DATAPTR(data2));
-            R_xlen_t j = start, len = altrep_numpy_array<Converter>::length(vec);
-            for (R_xlen_t i = 0; i < size && j < len; ++i, ++j) {
-                out[i] = ptr[j];
-            }
-            return j - start;
+template<class Converter>
+R_xlen_t get_region_from_numpy_array(SEXP vec, R_xlen_t start, R_xlen_t size, typename Converter::value_type* out){
+    SEXP data2=R_altrep_data2(vec);
+    if (data2==R_NilValue) {
+        PyArrayObject* data1 = AltvecFromNumpyArray<Converter>::as_array_obj(vec);
+        return Converter::extract(data1, start, size, out);
+    } else {
+        const typename Converter::value_type* ptr = static_cast<const typename Converter::value_type*>(STDVEC_DATAPTR(data2));
+        R_xlen_t j = start, len = AltvecFromNumpyArray<Converter>::length(vec);
+        for (R_xlen_t i = 0; i < size && j < len; ++i, ++j) {
+            out[i] = ptr[j];
         }
+        return j - start;
     }
-};
+}
 
 /********************************
  ******* Exported methods *******
  ********************************/
 
-SEXP create_altrep_numpy_double_array(PyArrayObject* ptr) {
-    return altrep_numpy_numeric_array<NumpyDoubleConverter>::create(ptr);
+SEXP create_altreal_from_numpy_array(PyObject* ptr) {
+    return AltvecFromNumpyArray<ConverterToReal>::create(ptr);
+}
+
+SEXP create_altinteger_from_numpy_array(PyObject* ptr) {
+    return AltvecFromNumpyArray<ConverterToInteger>::create(ptr);
+}
+
+SEXP create_altlogical_from_numpy_array(PyObject* ptr) {
+    return AltvecFromNumpyArray<ConverterToLogical>::create(ptr);
+}
+
+SEXP create_altcomplex_from_numpy_array(PyObject* ptr) {
+    return AltvecFromNumpyArray<ConverterToComplex>::create(ptr);
 }
 
 // [[Rcpp::init]]
-void init_altrep_numpy_double_array(DllInfo* dll) {
-    numpy_double_altrep_t = R_make_altreal_class("numpy_double_altrep", "reticulate", dll);
-    altrep_numpy_numeric_array<NumpyDoubleConverter>::partial_init();
-    R_set_altreal_Elt_method(numpy_double_altrep_t, altrep_numpy_numeric_array<NumpyDoubleConverter>::value_elt);
-    R_set_altreal_Get_region_method(numpy_double_altrep_t, altrep_numpy_numeric_array<NumpyDoubleConverter>::get_region);
-}
+void init_altvec_from_numpy_array(DllInfo* dll) {
+    altreal_from_numpy_array_t = R_make_altreal_class("altreal_from_numpy_array", "reticulate", dll); \
+    AltvecFromNumpyArray<ConverterToReal>::init(); 
+    R_set_altreal_Elt_method(altreal_from_numpy_array_t, elt_from_numpy_array<ConverterToReal>); 
+    R_set_altreal_Get_region_method(altreal_from_numpy_array_t, get_region_from_numpy_array<ConverterToReal>); 
 
-SEXP create_altrep_numpy_integer_array(PyArrayObject* ptr) {
-    return altrep_numpy_numeric_array<NumpyIntegerConverter>::create(ptr);
-}
+    altinteger_from_numpy_array_t = R_make_altinteger_class("altinteger_from_numpy_array", "reticulate", dll); \
+    AltvecFromNumpyArray<ConverterToInteger>::init(); 
+    R_set_altinteger_Elt_method(altinteger_from_numpy_array_t, elt_from_numpy_array<ConverterToInteger>); 
+    R_set_altinteger_Get_region_method(altinteger_from_numpy_array_t, get_region_from_numpy_array<ConverterToInteger>); 
 
-// [[Rcpp::init]]
-void init_altrep_numpy_integer_array(DllInfo* dll) {
-    numpy_integer_altrep_t = R_make_altinteger_class("numpy_integer_altrep", "reticulate", dll);
-    altrep_numpy_numeric_array<NumpyIntegerConverter>::partial_init();
-    R_set_altinteger_Elt_method(numpy_integer_altrep_t, altrep_numpy_numeric_array<NumpyIntegerConverter>::value_elt);
-    R_set_altinteger_Get_region_method(numpy_integer_altrep_t, altrep_numpy_numeric_array<NumpyIntegerConverter>::get_region);
-}
+    altlogical_from_numpy_array_t = R_make_altlogical_class("altlogical_from_numpy_array", "reticulate", dll); \
+    AltvecFromNumpyArray<ConverterToLogical>::init(); 
+    R_set_altlogical_Elt_method(altlogical_from_numpy_array_t, elt_from_numpy_array<ConverterToLogical>); 
+    R_set_altlogical_Get_region_method(altlogical_from_numpy_array_t, get_region_from_numpy_array<ConverterToLogical>); 
 
-SEXP create_altrep_numpy_logical_array(PyArrayObject* ptr) {
-    return altrep_numpy_numeric_array<NumpyLogicalConverter>::create(ptr);
-}
-
-// [[Rcpp::init]]
-void init_altrep_numpy_logical_array(DllInfo* dll) {
-    numpy_logical_altrep_t = R_make_altlogical_class("numpy_logical_altrep", "reticulate", dll);
-    altrep_numpy_numeric_array<NumpyLogicalConverter>::partial_init();
-    R_set_altlogical_Elt_method(numpy_logical_altrep_t, altrep_numpy_numeric_array<NumpyLogicalConverter>::value_elt);
-    R_set_altlogical_Get_region_method(numpy_logical_altrep_t, altrep_numpy_numeric_array<NumpyLogicalConverter>::get_region);
-}
-
-SEXP create_altrep_numpy_complex_array(PyArrayObject* ptr) {
-    return altrep_numpy_numeric_array<NumpyComplexConverter>::create(ptr);
-}
-
-// [[Rcpp::init]]
-void init_altrep_numpy_complex_array(DllInfo* dll) {
-    numpy_complex_altrep_t = R_make_altcomplex_class("numpy_complex_altrep", "reticulate", dll);
-    altrep_numpy_numeric_array<NumpyComplexConverter>::partial_init();
-    R_set_altcomplex_Elt_method(numpy_complex_altrep_t, altrep_numpy_numeric_array<NumpyComplexConverter>::value_elt);
-    R_set_altcomplex_Get_region_method(numpy_complex_altrep_t, altrep_numpy_numeric_array<NumpyComplexConverter>::get_region);
+    altcomplex_from_numpy_array_t = R_make_altcomplex_class("altcomplex_from_numpy_array", "reticulate", dll); \
+    AltvecFromNumpyArray<ConverterToComplex>::init(); 
+    R_set_altcomplex_Elt_method(altcomplex_from_numpy_array_t, elt_from_numpy_array<ConverterToComplex>); 
+    R_set_altcomplex_Get_region_method(altcomplex_from_numpy_array_t, get_region_from_numpy_array<ConverterToComplex>); 
 }

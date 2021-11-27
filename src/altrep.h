@@ -3,12 +3,12 @@
 
 #include "libpython.h"
 
-SEXP create_altrep_numpy_double_array(PyArrayObject*);
+SEXP create_altreal_from_numpy_array(PyObject*);
 
-SEXP create_altrep_numpy_integer_array(PyArrayObject*);
+SEXP create_altinteger_from_numpy_array(PyObject*);
 
-SEXP create_altrep_numpy_logical_array(PyArrayObject*);
+SEXP create_altlogical_from_numpy_array(PyObject*);
 
-SEXP create_altrep_numpy_complex_array(PyArrayObject*);
+SEXP create_altcomplex_from_numpy_array(PyObject*);
 
 #endif

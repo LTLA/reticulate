@@ -920,14 +920,14 @@ SEXP py_to_r(PyObject* x, bool convert) {
     if (dimsVector.size() == 1) {
         if (typenum == NPY_DOUBLE) {
             if (PyArray_TYPE(array) != NPY_HALF) {
-                return create_altrep_numpy_double_array(array);
+                return create_altreal_from_numpy_array(x);
             }
         } else if (typenum == NPY_LONG) {
-            return create_altrep_numpy_integer_array(array);
+            return create_altinteger_from_numpy_array(x);
         } else if (typenum == NPY_BOOL) {
-            return create_altrep_numpy_logical_array(array);
+            return create_altlogical_from_numpy_array(x);
         } else if (typenum == NPY_CDOUBLE) {
-            return create_altrep_numpy_complex_array(array);
+            return create_altcomplex_from_numpy_array(x);
         }
     }
 
